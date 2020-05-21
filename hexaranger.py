@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Callable, Any
 from itertools import permutations
 import base
 from redis_client import StoreClient
@@ -157,23 +157,55 @@ class HexaStore(base.HexaStore):
             thing: Optional[str] = None,
             attr: Optional[str] = None,
             val: Optional[str] = None,
-            partial: bool = False,
+            ordering: str = "TAV",
     ) -> str:
         query_parts = dict(T=thing, A=attr, V=val, )
-        prefix = ""
-        prefix_end = ""
+        prefix = ordering
         elements = []
-        for key, val in query_parts.items():
-            if val is not None:
-                prefix += key
+        for key in list(ordering):
+            if query_parts[key] is not None:
                 elements.append(val)
             else:
-                prefix_end += key
+                break
         data_str = cls.DELIM.join(elements)
-        trailing_delim = cls.DELIM if not partial else ""
         composite_key = (
-            f"{prefix}{prefix_end}{cls.PREFIX_DELIM}{data_str}{trailing_delim}"
+            f"{prefix}{cls.PREFIX_DELIM}{data_str}"
         )
         return composite_key
+
+    @classmethod
+    def map_func_to_groups(
+        cls,
+        func: Callable[[str], Any],
+        attr: str,
+        val_prefix: Optional[str] = None,
+    ):
+        ordering = "AVT"
+        range_start_key = cls.get_composite_key(
+            attr=attr,
+            val=val_prefix,
+            ordering=ordering,
+        )
+        # AVT:>birthdate::
+        range_end_key = f"{range_start_key}\xff"
+        reached_end = False
+        group_output = list()
+        cursor = range_start_key
+        while cursor < range_end_key and not reached_end:
+            # AVT:>color::
+            try:
+                first_key_in_group = cls.client.query_range(start_key=cursor, limit=1)[0]
+            except IndexError:
+                reached_end = True
+                break
+            _, attr, val = cls._convert_hexastore_key_to_tuple(first_key_in_group)
+            group_prefix = cls.get_composite_key(attr=attr, val=val, ordering=ordering)
+            # AVT:>color::orange
+            result = func(group_prefix)
+            group_output.append((group_prefix, result),)
+            # set cursor to last possible key for group
+            cursor = f"{group_prefix}\xff"
+
+        return group_output
 
 x = 0
